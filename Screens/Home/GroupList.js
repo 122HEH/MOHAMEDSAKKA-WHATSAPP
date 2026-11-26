@@ -5,9 +5,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import firebase from "../../config";
-
 const database = firebase.database();
-
 export default function GroupList(props) {
   const currentid = props.route.params.currentid;
   
@@ -34,42 +32,85 @@ export default function GroupList(props) {
     });
   }, [props.navigation]);
 
-  // Fetch Groups where I am a member
+  // Fetch Groups where user is a member via UserGroups index
   useEffect(() => {
-    const ref_groups = database.ref("Groups");
-    const listener = ref_groups.on("value", (snapshot) => {
-      const groups = [];
+    if (!currentid) return;
+    const ref_user_groups = database.ref("UserGroups").child(currentid);
+    const groupListeners = new Map();
+
+    const detachAllGroupListeners = () => {
+      groupListeners.forEach(({ ref, listener }) => {
+        ref.off("value", listener);
+      });
+      groupListeners.clear();
+    };
+
+    const userGroupsListener = ref_user_groups.on("value", (snapshot) => {
+      const groupIds = [];
       snapshot.forEach((child) => {
-        const group = child.val();
-        // Check if current user is in the members object
-        if (group.members && group.members[currentid]) {
-          groups.push({
-            id: child.key,
-            ...group
-          });
+        if (child.val() === true) groupIds.push(child.key);
+      });
+
+      // Detach listeners for groups no longer present
+      groupListeners.forEach(({ ref, listener }, gid) => {
+        if (!groupIds.includes(gid)) {
+          ref.off("value", listener);
+          groupListeners.delete(gid);
         }
       });
-      setMyGroups(groups);
-      setLoading(false);
-    });
-    return () => ref_groups.off("value", listener);
-  }, []);
 
-  // Fetch All Users for the Selection List
+      if (groupIds.length === 0) {
+        setMyGroups([]);
+        setLoading(false);
+        return;
+      }
+
+      setMyGroups((prev) => prev.filter((g) => groupIds.includes(g.id)));
+
+      groupIds.forEach((gid) => {
+        if (groupListeners.has(gid)) return;
+        const gRef = database.ref("Groups").child(gid);
+        const gListener = gRef.on("value", (gSnap) => {
+          setMyGroups((prev) => {
+            const without = prev.filter((g) => g.id !== gid);
+            if (!gSnap.exists()) return without;
+            const group = gSnap.val();
+            if (group?.members && group.members[currentid]) {
+              return [...without, { id: gid, ...group }];
+            }
+            return without;
+          });
+          setLoading(false);
+        }, () => {
+          setLoading(false);
+        });
+        groupListeners.set(gid, { ref: gRef, listener: gListener });
+      });
+    });
+
+    return () => {
+      ref_user_groups.off("value", userGroupsListener);
+      detachAllGroupListeners();
+    };
+  }, [currentid]);
+
+  // Fetch All Users from PublicProfiles for the Selection List
   useEffect(() => {
-    database.ref("Acounts").once("value").then(snapshot => {
+    const refPublic = database.ref("PublicProfiles");
+    const listener = refPublic.on("value", (snapshot) => {
       const users = [];
-      snapshot.forEach(child => {
+      snapshot.forEach((child) => {
         if (child.key !== currentid) { // Don't add myself to the list
           users.push({
             id: child.key,
-            ...child.val()
+            ...child.val(),
           });
         }
       });
       setAllUsers(users);
     });
-  }, []);
+    return () => refPublic.off("value", listener);
+  }, [currentid]);
 
   const openCreateModal = () => {
     setGroupName("");
@@ -85,32 +126,43 @@ export default function GroupList(props) {
     }
   };
 
-  const createGroup = () => {
-    if (!groupName.trim()) return Alert.alert("Error", "Please enter a group name");
+  const createGroup = async () => {
+    const cleanGroupName = groupName.trim();
+    if (!cleanGroupName) return Alert.alert("Error", "Please enter a group name");
     if (selectedUsers.length === 0) return Alert.alert("Error", "Select at least one member");
 
     const newGroupRef = database.ref("Groups").push();
     const membersObj = { [currentid]: true }; // Add creator
-    selectedUsers.forEach(uid => membersObj[uid] = true); // Add selected users
+    selectedUsers.forEach((uid) => { membersObj[uid] = true; }); // Add selected users
 
     const newGroup = {
-      name: groupName,
+      name: cleanGroupName,
       createdBy: currentid,
       createdAt: Date.now(),
       members: membersObj,
       lastMessage: "Group created",
-      lastMessageTime: Date.now()
+      lastMessageTime: Date.now(),
     };
 
-    newGroupRef.set(newGroup).then(() => {
+    try {
+      await newGroupRef.set(newGroup);
+
+      const userGroupUpdates = {};
+      Object.keys(membersObj).forEach((uid) => {
+        userGroupUpdates[`UserGroups/${uid}/${newGroupRef.key}`] = true;
+      });
+      await database.ref().update(userGroupUpdates);
+
       setModalVisible(false);
-      // Optional: Navigate immediately to the new group
+      // Navigate immediately to the new group
       props.navigation.navigate("GroupChat", {
         currentid: currentid,
         groupId: newGroupRef.key,
-        groupName: groupName
+        groupName: cleanGroupName,
       });
-    });
+    } catch (err) {
+      Alert.alert("Error", err.message);
+    }
   };
 
   const renderGroupItem = ({ item }) => (
@@ -136,10 +188,11 @@ export default function GroupList(props) {
       <Ionicons name="chevron-forward" size={20} color="#ccc" />
     </TouchableOpacity>
   );
-
+  // template lel flatlist   hekom li bch na5tarhom chnaaml grp list users
   const renderSelectUser = ({ item }) => {
     const isSelected = selectedUsers.includes(item.id);
     return (
+
       <TouchableOpacity 
         style={[styles.userSelectRow, isSelected && styles.userSelected]} 
         onPress={() => toggleUserSelection(item.id)}
@@ -177,6 +230,7 @@ export default function GroupList(props) {
       )}
 
       {/* CREATE GROUP MODAL */}
+
       <Modal visible={modalVisible} animationType="slide" transparent={false}>
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
@@ -200,6 +254,8 @@ export default function GroupList(props) {
           </View>
 
           <Text style={[styles.label, { marginLeft: 20, marginTop: 10 }]}>Select Members</Text>
+
+
           <FlatList
             data={allUsers}
             renderItem={renderSelectUser}

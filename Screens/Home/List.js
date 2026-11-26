@@ -1,22 +1,23 @@
 import {FlatList, ImageBackground, Image,StyleSheet,
   Text,TextInput,View,TouchableOpacity,StatusBar, Modal,Alert} from "react-native";
 import firebase from "../../config";
-import React, { useEffect, useState, useLayoutEffect } from "react";
+import React, { useEffect, useState, useLayoutEffect, useRef } from "react";
 import { Ionicons } from "@expo/vector-icons";
+import { normalizePhone } from "../../utils/appHelpers";
 
 const database = firebase.database();
-const ref_all_accounts = database.ref("Acounts");
 
 export default function List({ navigation, route }) {
   const currentid = route.params?.currentid;
 
-  const [data, setData] = useState([]); // All users
+  const [profilesById, setProfilesById] = useState({});
   const [myContacts, setMyContacts] = useState([]); // IDs of added contacts
 
   const [searchText, setSearchText] = useState("");
   const [modalVisible, setModalVisible] = useState(false);
   const [numberInput, setNumberInput] = useState("");
   const [searchResult, setSearchResult] = useState(null);
+  const searchSeqRef = useRef(0);
 
   // Reference to current user's contacts
   const ref_my_contacts = database.ref("MyContacts").child(currentid);
@@ -35,43 +36,67 @@ export default function List({ navigation, route }) {
     });
   }, [navigation]);
 
-  // Fetch all users 
-  useEffect(() => {
-    ref_all_accounts.on("value", (snapshot) => {
-      const d = [];
-      snapshot.forEach((child) => {
-        const user = child.val(); //Convert object to array
-        d.push(user); // include current user as well
-      });
-      setData(d);
-    });
-    return () => ref_all_accounts.off(); // Cleanup listener
-  }, []);
-
   // Fetch my added contacts
   useEffect(() => {
-    ref_my_contacts.on("value", (snapshot) => {
+    if (!currentid) return;
+    const listener = ref_my_contacts.on("value", (snapshot) => {
       const contactIds = [];
       snapshot.forEach((child) => {
         contactIds.push(child.key); // Collect contact IDs
       });
       setMyContacts(contactIds);
     });
-    return () => ref_my_contacts.off();
-  }, []);
+    return () => ref_my_contacts.off("value", listener);
+  }, [currentid]);
+
+  // Subscribe only to PublicProfiles of added contacts
+  useEffect(() => {
+    const activeListeners = new Map();
+
+    myContacts.forEach((contactId) => {
+      const profileRef = database.ref("PublicProfiles").child(contactId);
+      const listener = profileRef.on("value", (snap) => {
+        setProfilesById((prev) => {
+          if (!snap.exists()) {
+            const next = { ...prev };
+            delete next[contactId];
+            return next;
+          }
+          return { ...prev, [contactId]: snap.val() };
+        });
+      });
+      activeListeners.set(contactId, { profileRef, listener });
+    });
+
+    setProfilesById((prev) => {
+      const next = {};
+      myContacts.forEach((id) => {
+        if (prev[id]) next[id] = prev[id];
+      });
+      return next;
+    });
+
+    return () => {
+      activeListeners.forEach(({ profileRef, listener }) => {
+        profileRef.off("value", listener);
+      });
+    };
+  }, [myContacts]);
 
   // Filtered contacts based on added contacts and search text
-  const myContactsData = data.filter(user => myContacts.includes(user.Id));
-  const filteredContacts = myContactsData.filter(user => {
+  const myContactsData = myContacts
+    .map((id) => profilesById[id])
+    .filter(Boolean);
+
+  const filteredContacts = myContactsData.filter((user) => {
     const text = searchText.toLowerCase();
     return (
       user.FullName?.toLowerCase().includes(text) ||
-      user.Pseudo?.toLowerCase().includes(text) ||
-      user.Numero?.toLowerCase().includes(text)
+      user.Pseudo?.toLowerCase().includes(text)
     );
   });
 
-  // Add new contact by number
+  // Add new contact by number fel firebase
   const addContactByNumber = () => {
     if (!searchResult) return;
     // Add to my contacts FriendID = true
@@ -85,11 +110,28 @@ export default function List({ navigation, route }) {
       .catch((err) => Alert.alert("Error", err.message));
   };
 
-  const handleSearchNumber = (text) => {
+  const handleSearchNumber = async (text) => {
     setNumberInput(text);
-    if (text.length >= 3) {
-      const found = data.find(u => u.Numero === text);
-      setSearchResult(found || null);
+    const cleanNum = normalizePhone(text);
+    const seq = ++searchSeqRef.current;
+
+    if (cleanNum.length >= 3) {
+      try {
+        const snap = await database.ref("PhoneLookup").child(cleanNum).once("value");
+        if (seq !== searchSeqRef.current) return;
+        if (snap.exists()) {
+          const val = snap.val();
+          setSearchResult({
+            Id: val.uid,
+            FullName: val.FullName,
+            Pseudo: val.Pseudo,
+          });
+        } else {
+          setSearchResult(null);
+        }
+      } catch (err) {
+        if (seq === searchSeqRef.current) setSearchResult(null);
+      }
     } else {
       setSearchResult(null);
     }
@@ -104,7 +146,6 @@ export default function List({ navigation, route }) {
         <View style={styles.textContainer}>
           <Text style={styles.name}>{item.FullName || "Unknown Name"}</Text>
           <Text style={styles.pseudo}>@{item.Pseudo || "user"}</Text>
-          <Text style={styles.contact}>{item.Numero || "No number"}</Text>
         </View>
         <TouchableOpacity
           style={styles.chatBtn}
@@ -161,7 +202,6 @@ export default function List({ navigation, route }) {
               <View style={{ marginVertical: 10, padding: 10, backgroundColor: "#eee", borderRadius: 10 }}>
                 <Text style={{ fontWeight: "bold" }}>{searchResult.FullName}</Text>
                 <Text>@{searchResult.Pseudo}</Text>
-                <Text>{searchResult.Numero}</Text>
               </View>
             )}
             <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 15 }}>

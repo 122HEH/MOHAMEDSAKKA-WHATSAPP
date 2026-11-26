@@ -11,19 +11,26 @@ import "firebase/compat/storage";
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
 
 
+const firebaseApiKey = process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "";
+if (!firebaseApiKey) {
+  console.warn(
+    "Missing EXPO_PUBLIC_FIREBASE_API_KEY in .env.local. Firebase Auth will fail until it is set."
+  );
+}
+
 const firebaseConfig = {
-  apiKey: "AIzaSyBkz5JaUPjlDp-cS0wHwfKauYX2GcYbWsM",
-  authDomain: "whatsapp-react-native-634b6.firebaseapp.com",
-  projectId: "whatsapp-react-native-634b6",
-  databaseURL: "https://whatsapp-react-native-634b6-default-rtdb.europe-west1.firebasedatabase.app",
-  storageBucket: "whatsapp-react-native-634b6.firebasestorage.app",
-  messagingSenderId: "224480166392",
-  appId: "1:224480166392:web:c4575a98920138972ed60d",
-  measurementId: "G-Q1T75MFP6L"
+  apiKey: firebaseApiKey,
+  authDomain: "sakkamohamedwhatsapp.firebaseapp.com",
+  projectId: "sakkamohamedwhatsapp",
+  databaseURL: "https://sakkamohamedwhatsapp-default-rtdb.europe-west1.firebasedatabase.app",
+  storageBucket: "sakkamohamedwhatsapp.firebasestorage.app",
+  messagingSenderId: "888323469890",
+  appId: "1:888323469890:web:6b5e0771b651fa726c73db",
+  measurementId: "G-SSH8VK6CY3"
 };
 
-// Initialize Firebase
-const firebase = app.initializeApp(firebaseConfig);
+// Initialize Firebase (reuse existing default app during Metro Fast Refresh)
+const firebase = app.apps.length ? app.app() : app.initializeApp(firebaseConfig);
 export default firebase;
 
 

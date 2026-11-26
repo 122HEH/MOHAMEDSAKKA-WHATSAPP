@@ -1,0 +1,219 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "Acounts": {
+      ".read": false,
+      ".write": false,
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['Id', 'FullName', 'Pseudo', 'Email']) && newData.child('Id').val() === $uid",
+        "Id": { ".validate": "newData.val() === $uid" },
+        "FullName": { ".validate": "newData.isString()" },
+        "Pseudo": { ".validate": "newData.isString()" },
+        "Numero": { ".validate": "newData.isString()" },
+        "Email": { ".validate": "newData.isString()" },
+        "ProfileImage": { ".validate": "newData.isString()" },
+        "ImageFileName": { ".validate": "newData.isString()" },
+        "online": { ".validate": "newData.isBoolean()" },
+        "lastSeen": { ".validate": "newData.isNumber()" },
+        "$other": { ".validate": false }
+      }
+    },
+
+    "PublicProfiles": {
+      ".read": "auth != null",
+      ".write": false,
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['Id', 'FullName', 'Pseudo']) && newData.child('Id').val() === $uid",
+        "Id": { ".validate": "newData.val() === $uid" },
+        "FullName": { ".validate": "newData.isString()" },
+        "Pseudo": { ".validate": "newData.isString()" },
+        "ProfileImage": { ".validate": "newData.isString()" },
+        "online": { ".validate": "newData.isBoolean()" },
+        "lastSeen": { ".validate": "newData.isNumber()" },
+        "$other": { ".validate": false }
+      }
+    },
+
+    "PhoneLookup": {
+      ".read": false,
+      ".write": false,
+      "$numero": {
+        ".read": "auth != null",
+        ".write": "auth != null && $numero.length > 0 && ((!data.exists() && newData.exists() && newData.child('uid').val() === auth.uid) || (data.exists() && data.child('uid').val() === auth.uid && (!newData.exists() || newData.child('uid').val() === auth.uid)))",
+        ".validate": "newData.hasChildren(['uid', 'FullName', 'Pseudo'])",
+        "uid": { ".validate": "newData.val() === auth.uid" },
+        "FullName": { ".validate": "newData.isString()" },
+        "Pseudo": { ".validate": "newData.isString()" },
+        "$other": { ".validate": false }
+      }
+    },
+
+    "MyContacts": {
+      ".read": false,
+      ".write": false,
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": false,
+        "$contactId": {
+          ".write": "auth != null && ((auth.uid === $uid && (!newData.exists() || (newData.val() === true && root.child('Acounts').child($contactId).exists()))) || (auth.uid === $contactId && newData.exists() && newData.val() === true && root.child('Acounts').child($uid).exists() && (root.child('Discussions').child($uid + $contactId).exists() || root.child('Discussions').child($contactId + $uid).exists())))",
+          ".validate": "newData.val() === true"
+        }
+      }
+    },
+
+    "Discussions": {
+      ".read": false,
+      ".write": false,
+      "$roomID": {
+        ".read": "auth != null && auth.uid.length === 28 && $roomID.length === 56 && ($roomID.beginsWith(auth.uid) || $roomID.endsWith(auth.uid)) && (!data.exists() || data.child('members').child(auth.uid).val() === true)",
+        ".write": "auth != null && !data.exists() && newData.exists() && auth.uid.length === 28 && $roomID.length === 56 && ($roomID.beginsWith(auth.uid) || $roomID.endsWith(auth.uid))",
+        ".validate": "newData.hasChild('members') && newData.child('members').child(auth.uid).val() === true && ($roomID === auth.uid + auth.uid || newData.child('members').child($roomID.replace(auth.uid, '')).val() === true)",
+
+        "members": {
+          "$uid": {
+            ".write": "auth != null && !data.exists() && newData.exists() && newData.val() === true && auth.uid.length === 28 && $roomID.length === 56 && ($roomID.beginsWith(auth.uid) || $roomID.endsWith(auth.uid)) && $uid.length === 28 && ($roomID.beginsWith($uid) || $roomID.endsWith($uid)) && root.child('Acounts').child($uid).exists()",
+            ".validate": "newData.val() === true && $uid.length === 28 && ($roomID.beginsWith($uid) || $roomID.endsWith($uid)) && root.child('Acounts').child($uid).exists()"
+          }
+        },
+
+        "currentIDisTyping": {
+          ".write": "auth != null && newData.exists() && auth.uid.length === 28 && $roomID.length === 56 && $roomID.endsWith(auth.uid) && root.child('Discussions').child($roomID).child('members').child(auth.uid).val() === true",
+          ".validate": "newData.isBoolean()"
+        },
+
+        "secondIDisTyping": {
+          ".write": "auth != null && newData.exists() && auth.uid.length === 28 && $roomID.length === 56 && $roomID.beginsWith(auth.uid) && root.child('Discussions').child($roomID).child('members').child(auth.uid).val() === true",
+          ".validate": "newData.isBoolean()"
+        },
+
+        "BackgroundImage": {
+          ".write": "auth != null && newData.exists() && auth.uid.length === 28 && $roomID.length === 56 && ($roomID.beginsWith(auth.uid) || $roomID.endsWith(auth.uid)) && root.child('Discussions').child($roomID).child('members').child(auth.uid).val() === true",
+          ".validate": "newData.isString()"
+        },
+
+        "$msgId": {
+          ".write": "auth != null && $msgId !== 'members' && $msgId !== 'currentIDisTyping' && $msgId !== 'secondIDisTyping' && $msgId !== 'BackgroundImage' && !data.exists() && newData.exists() && auth.uid.length === 28 && $roomID.length === 56 && ($roomID.beginsWith(auth.uid) || $roomID.endsWith(auth.uid)) && root.child('Discussions').child($roomID).child('members').child(auth.uid).val() === true",
+          ".validate": "newData.hasChildren(['_id', 'createdAt', 'user', 'Sender', 'Receiver', 'isSeen', 'text']) && (data.exists() || (!newData.hasChild('seenBy') && !newData.hasChild('seenAt') && newData.child('isSeen').val() === false)) && (!newData.hasChild('image') || newData.child('image').isString()) && (!newData.hasChild('location') || (newData.child('location').child('latitude').isNumber() && newData.child('location').child('longitude').isNumber())) && (!newData.hasChild('file') || (newData.child('file').child('url').isString() && newData.child('file').child('name').isString()))",
+          "_id": { ".validate": "newData.val() === $msgId" },
+          "createdAt": { ".validate": "newData.isNumber()" },
+          "Sender": { ".validate": "(!data.exists() && newData.val() === auth.uid) || (data.exists() && newData.val() === data.val())" },
+          "Receiver": { ".validate": "(!data.exists() && newData.isString() && newData.val().length === 28 && ($roomID.beginsWith(newData.val()) || $roomID.endsWith(newData.val())) && root.child('Acounts').child(newData.val()).exists()) || (data.exists() && newData.val() === data.val())" },
+          "user": {
+            "_id": { ".validate": "(!data.exists() && newData.val() === auth.uid) || (data.exists() && newData.val() === data.val())" },
+            "$other": { ".validate": false }
+          },
+          "text": { ".validate": "newData.isString()" },
+          "image": { ".validate": "newData.isString()" },
+          "location": {
+            "latitude": { ".validate": "newData.isNumber()" },
+            "longitude": { ".validate": "newData.isNumber()" },
+            "$other": { ".validate": false }
+          },
+          "file": {
+            "url": { ".validate": "newData.isString()" },
+            "name": { ".validate": "newData.isString()" },
+            "type": { ".validate": "newData.isString()" },
+            "$other": { ".validate": false }
+          },
+          "isSeen": {
+            ".write": "auth != null && data.parent().exists() && data.parent().child('Receiver').val() === auth.uid && data.val() === false && newData.exists() && newData.val() === true",
+            ".validate": "newData.isBoolean()"
+          },
+          "seenBy": {
+            ".write": "auth != null && data.parent().exists() && data.parent().child('Receiver').val() === auth.uid && !data.exists() && newData.exists() && newData.val() === auth.uid",
+            ".validate": "newData.isString()"
+          },
+          "seenAt": {
+            ".write": "auth != null && data.parent().exists() && data.parent().child('Receiver').val() === auth.uid && !data.exists() && newData.exists() && newData.isNumber()",
+            ".validate": "newData.isNumber()"
+          },
+          "$other": { ".validate": false }
+        }
+      }
+    },
+
+    "UserGroups": {
+      ".read": false,
+      ".write": false,
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": false,
+        "$groupId": {
+          ".write": "auth != null && ((auth.uid === $uid && !newData.exists()) || (newData.exists() && newData.val() === true && root.child('Groups').child($groupId).child('members').child(auth.uid).val() === true && root.child('Groups').child($groupId).child('members').child($uid).val() === true))",
+          ".validate": "newData.val() === true"
+        }
+      }
+    },
+
+    "Groups": {
+      ".read": false,
+      ".write": false,
+      "$groupId": {
+        ".read": "auth != null && data.child('members').child(auth.uid).val() === true",
+        ".write": "auth != null && !data.exists() && newData.exists() && newData.child('createdBy').val() === auth.uid && newData.child('members').child(auth.uid).val() === true",
+        ".validate": "newData.hasChildren(['name', 'createdBy', 'createdAt', 'members'])",
+        "name": { ".validate": "newData.isString() && newData.val().length > 0" },
+        "createdBy": { ".validate": "newData.isString() && ((!data.exists() && newData.val() === auth.uid) || (data.exists() && newData.val() === data.val()))" },
+        "createdAt": { ".validate": "newData.isNumber()" },
+        "members": {
+          "$memberUid": {
+            ".write": "auth != null && root.child('Groups').child($groupId).child('members').child(auth.uid).val() === true && newData.exists() && newData.val() === true && root.child('Acounts').child($memberUid).exists()",
+            ".validate": "newData.val() === true && root.child('Acounts').child($memberUid).exists()"
+          }
+        },
+        "lastMessage": {
+          ".write": "auth != null && newData.exists() && root.child('Groups').child($groupId).child('members').child(auth.uid).val() === true",
+          ".validate": "newData.isString()"
+        },
+        "lastMessageTime": {
+          ".write": "auth != null && newData.exists() && root.child('Groups').child($groupId).child('members').child(auth.uid).val() === true",
+          ".validate": "newData.isNumber()"
+        },
+        "BackgroundImage": {
+          ".write": "auth != null && newData.exists() && root.child('Groups').child($groupId).child('members').child(auth.uid).val() === true",
+          ".validate": "newData.isString()"
+        },
+        "$other": { ".validate": false }
+      }
+    },
+
+    "GroupDiscussion": {
+      ".read": false,
+      ".write": false,
+      "$groupId": {
+        ".read": "auth != null && root.child('Groups').child($groupId).child('members').child(auth.uid).val() === true",
+        ".write": false,
+        "$msgId": {
+          ".write": "auth != null && !data.exists() && newData.exists() && root.child('Groups').child($groupId).child('members').child(auth.uid).val() === true",
+          ".validate": "newData.hasChildren(['_id', 'createdAt', 'senderId', 'senderName', 'type', 'text']) && (newData.child('type').val() !== 'image' || newData.child('image').isString()) && (newData.child('type').val() !== 'location' || (newData.child('location').child('latitude').isNumber() && newData.child('location').child('longitude').isNumber())) && (newData.child('type').val() !== 'file' || (newData.child('file').child('url').isString() && newData.child('file').child('name').isString()))",
+          "_id": { ".validate": "newData.val() === $msgId" },
+          "createdAt": { ".validate": "newData.isNumber()" },
+          "senderId": { ".validate": "newData.val() === auth.uid" },
+          "senderName": { ".validate": "newData.isString()" },
+          "senderImage": { ".validate": "newData.isString()" },
+          "isSystem": { ".validate": "newData.isBoolean()" },
+          "type": { ".validate": "newData.val().matches(/^(text|image|location|file)$/)" },
+          "text": { ".validate": "newData.isString()" },
+          "image": { ".validate": "newData.isString()" },
+          "location": {
+            "latitude": { ".validate": "newData.isNumber()" },
+            "longitude": { ".validate": "newData.isNumber()" },
+            "$other": { ".validate": false }
+          },
+          "file": {
+            "url": { ".validate": "newData.isString()" },
+            "name": { ".validate": "newData.isString()" },
+            "type": { ".validate": "newData.isString()" },
+            "$other": { ".validate": false }
+          },
+          "$other": { ".validate": false }
+        }
+      }
+    }
+  }
+}

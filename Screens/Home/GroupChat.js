@@ -3,11 +3,12 @@ import {
   View, Text, StyleSheet, ImageBackground, Image, TextInput, TouchableOpacity,
   FlatList, KeyboardAvoidingView, Platform, StatusBar, Alert, Linking, ActivityIndicator, Modal, Dimensions, SafeAreaView, ScrollView
 } from "react-native";
-import firebase, { supabase } from "../../config"; 
+import firebase from "../../config";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
-import * as DocumentPicker from "expo-document-picker"; 
+import * as DocumentPicker from "expo-document-picker";
+import { sanitizeStorageFileName, uploadMediaToSupabase } from "../../utils/appHelpers";
 
 const database = firebase.database();
 const { width } = Dimensions.get("window");
@@ -41,7 +42,9 @@ export default function GroupChat(props) {
   }, []);
 
   useEffect(() => {
-    // Listener for messages AND background
+    
+    // Listener lel messages et background
+
     const listener = ref_group_msgs.on("value", (snapshot) => {
       const fetchedMessages = [];
       snapshot.forEach((child) => {
@@ -57,7 +60,7 @@ export default function GroupChat(props) {
       setMessages(fetchedMessages);
     });
 
-    // Listener for background image changes
+   
     const bgListener = ref_group_meta.child("BackgroundImage").on("value", (snap) => {
         if(snap.exists()) setBackgroundImage(snap.val());
         else setBackgroundImage(null);
@@ -70,113 +73,152 @@ export default function GroupChat(props) {
   }, [groupId]);
 
   const loadNonMembers = async () => {
-    const groupSnap = await ref_group_meta.child("members").once("value");
-    const currentMembers = groupSnap.val() || {};
-    const usersSnap = await database.ref("Acounts").once("value");
-    const potentialMembers = [];
-    usersSnap.forEach(child => {
-      if (!currentMembers[child.key]) {
-        potentialMembers.push({ id: child.key, ...child.val() });
-      }
-    });
-    setNonMembers(potentialMembers);
-    setAddMemberModalVisible(true);
+    try {
+      const groupSnap = await ref_group_meta.child("members").once("value");
+      const currentMembers = groupSnap.val() || {};
+      const usersSnap = await database.ref("PublicProfiles").once("value");
+      const potentialMembers = [];
+      usersSnap.forEach((child) => {
+        if (!currentMembers[child.key]) {
+          potentialMembers.push({ id: child.key, ...child.val() });
+        }
+      });
+      setNonMembers(potentialMembers);
+      setAddMemberModalVisible(true);
+    } catch (err) {
+      Alert.alert("Error", err.message);
+    }
   };
-
+// baad mata5tarou
   const addMemberToGroup = (userId) => {
     Alert.alert("Add Member", "Add this user to the group?", [
       { text: "Cancel", style: "cancel" },
-      { 
-        text: "Add", 
-        onPress: () => {
-          ref_group_meta.child("members").child(userId).set(true);
-          sendMessage("text", "Added a new member!", true);
-          setAddMemberModalVisible(false);
-          Alert.alert("Success", "User added!");
-        }
-      }
+      {
+        text: "Add",
+        onPress: async () => {
+          try {
+            await ref_group_meta.child("members").child(userId).set(true);
+            await database.ref("UserGroups").child(userId).child(groupId).set(true);
+            await sendMessage("text", "Added a new member!", true);
+            setAddMemberModalVisible(false);
+            Alert.alert("Success", "User added!");
+          } catch (err) {
+            Alert.alert("Error", err.message);
+          }
+        },
+      },
     ]);
   };
 
-  const changeBackground = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-    });
-    if (!result.canceled) {
-        // Save background to Group Metadata
-        ref_group_meta.child("BackgroundImage").set(result.assets[0].uri);
+  const uploadImageToSupabase = async (localURL, prefix = `grp_${groupId}`) => {
+    try {
+      const fileName = `${prefix}_${Date.now()}.jpg`;
+      const { publicUrl } = await uploadMediaToSupabase({
+        uri: localURL,
+        storagePath: fileName,
+        contentType: "image/jpeg",
+      });
+      return publicUrl;
+    } catch (error) {
+      Alert.alert("Error", error.message);
+      return null;
     }
   };
 
-  const uploadImageToSupabase = async (localURL) => {
+  const changeBackground = async () => {
     try {
-      const fileName = `grp_${groupId}_${Date.now()}.jpg`;
-      const response = await fetch(localURL);
-      const blob = await response.blob();
-      const arrayBuffer = await new Response(blob).arrayBuffer();
-      const { error } = await supabase.storage.from("lesimagesprofiles").upload(fileName, arrayBuffer, { contentType: "image/jpeg", upsert: true });
-      if (error) throw error;
-      const { data } = supabase.storage.from("lesimagesprofiles").getPublicUrl(fileName);
-      return data.publicUrl;
-    } catch (error) { Alert.alert("Error", error.message); return null; }
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) return Alert.alert("Permission required");
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 0.7,
+      });
+      if (!result.canceled && result.assets?.[0]?.uri) {
+        setUploading(true);
+        const publicUrl = await uploadImageToSupabase(result.assets[0].uri, `bg_grp_${groupId}`);
+        if (publicUrl) {
+          await ref_group_meta.child("BackgroundImage").set(publicUrl);
+        }
+      }
+    } catch (err) {
+      Alert.alert("Error", err.message);
+    } finally {
+      setUploading(false);
+    }
   };
 
   const uploadFileToSupabase = async (uri, fileName, mimeType) => {
-     try {
-        const response = await fetch(uri);
-        const blob = await response.blob();
-        const arrayBuffer = await new Response(blob).arrayBuffer();
-        const storagePath = `files/grp_${groupId}_${Date.now()}_${fileName}`;
-        const { error } = await supabase.storage.from("lesimagesprofiles").upload(storagePath, arrayBuffer, { contentType: mimeType || 'application/octet-stream', upsert: true });
-        if (error) throw error;
-        const { data } = supabase.storage.from("lesimagesprofiles").getPublicUrl(storagePath);
-        return data.publicUrl;
-    } catch (error) { Alert.alert("Error", error.message); return null; }
+    try {
+      const safeName = sanitizeStorageFileName(fileName);
+      const storagePath = `files/grp_${groupId}_${Date.now()}_${safeName}`;
+      const { publicUrl } = await uploadMediaToSupabase({
+        uri,
+        storagePath,
+        contentType: mimeType || "application/octet-stream",
+      });
+      return publicUrl;
+    } catch (error) {
+      Alert.alert("Error", error.message);
+      return null;
+    }
   };
 
   const sendMessage = async (type = "text", content = null, isSystem = false) => {
     if (type === "text" && !inputText.trim() && !isSystem) return;
 
-    const key = ref_group_msgs.push().key;
-    const name = currentUserData?.FullName || "User";
-    
-    const msgData = {
+    try {
+      const key = ref_group_msgs.push().key;
+      const name = currentUserData?.FullName || "User";
+
+      const msgData = {
         _id: key,
         createdAt: Date.now(),
-        senderId: isSystem ? "SYSTEM" : currentid,
+        senderId: currentid,
         senderName: isSystem ? "System" : name,
-        senderImage: currentUserData?.ProfileImage || null,
         type: type,
-        text: type === 'text' ? (isSystem ? content : inputText) : `${type.toUpperCase()} sent`,
-    };
+        text: type === "text" ? (isSystem ? content : inputText) : `${type.toUpperCase()} sent`,
+      };
 
-    if (type === 'image') msgData.image = content;
-    if (type === 'location') msgData.location = content;
-    if (type === 'file') msgData.file = content;
+      if (isSystem) msgData.isSystem = true;
+      if (!isSystem && currentUserData?.ProfileImage) {
+        msgData.senderImage = currentUserData.ProfileImage;
+      }
 
-    await ref_group_msgs.child(key).set(msgData);
-    
-    if (!isSystem) {
-        ref_group_meta.update({
-            lastMessage: type === 'text' ? inputText : `${name} sent a ${type}`,
-            lastMessageTime: Date.now()
+      if (type === "image") msgData.image = content;
+      if (type === "location") msgData.location = content;
+      if (type === "file") {
+        msgData.file = {
+          url: content.url,
+          name: content.name,
+          ...(content.type ? { type: content.type } : {}),
+        };
+      }
+
+      await ref_group_msgs.child(key).set(msgData);
+
+      if (!isSystem) {
+        await ref_group_meta.update({
+          lastMessage: type === "text" ? inputText : `${name} sent a ${type}`,
+          lastMessageTime: Date.now(),
         });
-    }
+      }
 
-    if (type === "text") setInputText("");
+      if (type === "text" && !isSystem) setInputText("");
+    } catch (err) {
+      Alert.alert("Error", err.message);
+    }
   };
 
   const pickImage = async () => {
-     const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.7 });
-     if (!res.canceled) {
-         setUploading(true);
-         const url = await uploadImageToSupabase(res.assets[0].uri);
-         setUploading(false);
-         if(url) sendMessage("image", url);
-     }
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) return Alert.alert("Permission required");
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.7 });
+    if (!res.canceled && res.assets?.[0]?.uri) {
+      setUploading(true);
+      const url = await uploadImageToSupabase(res.assets[0].uri);
+      setUploading(false);
+      if (url) sendMessage("image", url);
+    }
   };
 
   const pickFile = async () => {
@@ -184,7 +226,7 @@ export default function GroupChat(props) {
           const res = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
           if(!res.canceled && res.assets) {
               const file = res.assets[0];
-              if(file.size > 10*1024*1024) return Alert.alert("Too big", "Max 10MB");
+              if(file.size && file.size > 10*1024*1024) return Alert.alert("Too big", "Max 10MB");
               setUploading(true);
               const url = await uploadFileToSupabase(file.uri, file.name, file.mimeType);
               setUploading(false);
@@ -197,9 +239,14 @@ export default function GroupChat(props) {
       let { status } = await Location.requestForegroundPermissionsAsync();
       if(status !== 'granted') return;
       setUploading(true);
-      let loc = await Location.getCurrentPositionAsync({});
-      setUploading(false);
-      sendMessage("location", { latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+      try {
+        let loc = await Location.getCurrentPositionAsync({});
+        await sendMessage("location", { latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+      } catch (err) {
+        Alert.alert("Error", err.message);
+      } finally {
+        setUploading(false);
+      }
   };
 
   const openMap = (loc) => {
@@ -212,7 +259,7 @@ export default function GroupChat(props) {
 
   const renderMessage = ({ item }) => {
     const isMe = item.senderId === currentid;
-    const isSystem = item.senderId === "SYSTEM";
+    const isSystem = item.isSystem === true || item.senderId === "SYSTEM";
 
     if (isSystem) {
         return (
@@ -271,6 +318,7 @@ export default function GroupChat(props) {
        <StatusBar barStyle="light-content" backgroundColor="#3b4db8" />
        
        {/* Responsive Header Container */}
+       
        <View style={{backgroundColor: "#3b4db8", paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0 }}>
          <SafeAreaView>
             <View style={styles.header}>
@@ -280,11 +328,12 @@ export default function GroupChat(props) {
                    </TouchableOpacity>
                    <View style={styles.headerTextContainer}>
                         <Text style={styles.headerTitle} numberOfLines={1}>{groupName}</Text>
-                        <Text style={styles.headerSub}>Tap icons for options</Text>
+                       
                    </View>
                </View>
 
                {/* Right Side Icons: Shared, Bg, Add Member */}
+
                <View style={{flexDirection: 'row', alignItems: 'center'}}>
                     <TouchableOpacity onPress={() => setSharedModalVisible(true)} style={styles.headerIcon}>
                         <Ionicons name="folder-open" size={22} color="white" />
@@ -452,6 +501,7 @@ const styles = StyleSheet.create({
   senderName: { fontSize: 11, color: "#e67e22", fontWeight: 'bold', marginBottom: 4 },
   
   // Floating Input
+  
   inputWrapper: {
       position: 'absolute',
       bottom: 0, left: 0, right: 0,

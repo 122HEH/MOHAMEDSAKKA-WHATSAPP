@@ -1,16 +1,8 @@
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  ImageBackground,
-  Alert,
-  Modal,
-} from "react-native";
-import React, { useState, useEffect } from "react";
+import {View,Text,TextInput,TouchableOpacity,StyleSheet,ImageBackground,Alert,Modal, ActivityIndicator,} from "react-native";
+import React, { useState, useEffect, useRef } from "react";
 import firebase from "../config";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { syncOnlinePresence } from "../utils/appHelpers";
 
 export default function Auth({ navigation }) {
   const auth = firebase.auth();
@@ -20,28 +12,43 @@ export default function Auth({ navigation }) {
   const [pwd, setPwd] = useState("");
   const [modalVisible, setModalVisible] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const hasNavigatedRef = useRef(false);
 
-  // Auto-login using stored UID
-useEffect(() => {
-    const checkStoredUID = async () => {
-      const savedUID = await AsyncStorage.getItem("CURRENT_UID");
+  const completeAuthenticatedSession = async (user) => {
+    if (!user || hasNavigatedRef.current) return;
+    hasNavigatedRef.current = true;
+    const uid = user.uid;
 
-      if (savedUID) {
-      // Set Online Status for Auto-Login ---
-        const userRef = database.ref("Acounts").child(savedUID);
-      
-        await userRef.update({ online: true });
-        
-        // Ensure it goes back to false if app closes/crashes or internet is lost
-        userRef.child("online").onDisconnect().set(false);
-        userRef.child("lastSeen").onDisconnect().set(Date.now());
+    try {
+      await AsyncStorage.setItem("CURRENT_UID", uid);
+    } catch (storageErr) {
+      console.warn("AsyncStorage set CURRENT_UID failed:", storageErr?.message || storageErr);
+    }
 
+    try {
+      await syncOnlinePresence(database, uid);
+    } catch (presenceErr) {
+      console.warn("Presence sync failed:", presenceErr?.message || presenceErr);
+    }
 
-        navigation.replace("Home", { currentid: savedUID });
+    navigation.replace("Home", { currentid: uid });
+  };
+
+  // Restore Firebase Auth session securely instead of trusting AsyncStorage alone
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (user) {
+        await completeAuthenticatedSession(user);
+      } else {
+        try {
+          await AsyncStorage.removeItem("CURRENT_UID");
+        } catch (_) {}
+        setIsLoading(false);
       }
-    };
+    });
 
-    checkStoredUID();
+    return () => unsubscribe();
   }, []);
 
   // Login function
@@ -57,21 +64,7 @@ useEffect(() => {
         pwd
       );
 
-      const user = userCredential.user;
-      const uid = user.uid;
-
-      // Save UID for auto login
-      await AsyncStorage.setItem("CURRENT_UID", uid);
-
-      // Mark user online
-      const userRef = database.ref("Acounts").child(uid);
-
-      await userRef.update({ online: true });
-
-      userRef.child("online").onDisconnect().set(false);
-      userRef.child("lastSeen").onDisconnect().set(Date.now());
-
-      navigation.replace("Home", { currentid: uid });
+      await completeAuthenticatedSession(userCredential.user);
     } catch (error) {
       Alert.alert("Login Error", error.message);
     }
@@ -99,6 +92,16 @@ useEffect(() => {
     }
   };
 
+  // Loading indicator while checking Firebase Auth session
+  if (isLoading) {
+    return (
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#fff" }}>
+        <ActivityIndicator size="large" color="#200ae1ff" />
+        <Text style={{ marginTop: 10 }}>Checking login status...</Text>
+      </View>
+    );
+  }
+ 
   return (
     <ImageBackground
       source={require("../assets/background.jpg")}
@@ -138,6 +141,7 @@ useEffect(() => {
       </View>
 
       {/* Reset password modal */}
+      
       <Modal
         animationType="slide"
         transparent={true}

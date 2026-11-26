@@ -7,7 +7,8 @@ import GroupList from "./Home/GroupList";
 const Tab = createBottomTabNavigator();
 
 export default function Home(props) {
-  //Get the current user ID passed from Auth.js
+
+  //Get the current user ID passed from Auth.js or createUser.js
   const currentid=props.route.params.currentid;
   return (
     <Tab.Navigator

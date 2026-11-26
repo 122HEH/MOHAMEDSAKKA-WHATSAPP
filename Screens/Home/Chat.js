@@ -2,18 +2,23 @@ import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import {View,Text,StyleSheet,ImageBackground,Image,TextInput,TouchableOpacity,
   FlatList,KeyboardAvoidingView, Platform, StatusBar, Alert,Linking,ActivityIndicator,
   Modal, ScrollView, Dimensions} from "react-native";
-import firebase, { supabase } from "../../config";
+import firebase from "../../config";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
-import * as DocumentPicker from "expo-document-picker"; 
-import * as FileSystem from "expo-file-system"; 
+import * as DocumentPicker from "expo-document-picker";
+import {
+  buildRoomId,
+  SERVER_TIMESTAMP,
+  sanitizeStorageFileName,
+  uploadMediaToSupabase,
+} from "../../utils/appHelpers";
 
 const database = firebase.database();
 // Get device width for responsive design
 const { width } = Dimensions.get("window");
 
-// --- Helper Functions for Date/Time ---
+//  Functions for Date/Time 
 const getRelativeTime = (timestamp) => {
     const now = Date.now();
     const diff = now - timestamp;
@@ -66,35 +71,66 @@ export default function Chat(props) {
   // Shared Files Modal State
   const [sharedModalVisible, setSharedModalVisible] = useState(false);
 
-  const roomID = currentid > secondid ? currentid + secondid : secondid + currentid;
+  const roomID = buildRoomId(currentid, secondid);
   const ref_discussion = database.ref("Discussions").child(roomID);
-  const ref_recipient = database.ref("Acounts").child(secondid);
+  const ref_recipient = database.ref("PublicProfiles").child(secondid);
   const ref_my_contacts_current = database.ref("MyContacts").child(currentid);
   const ref_my_contacts_second = database.ref("MyContacts").child(secondid);
+
   // Determine order for typing indicators
   const amFirst = currentid < secondid;
+  const myTypingKey = amFirst ? "currentIDisTyping" : "secondIDisTyping";
   // Self-chat check
   const isSelfChat = currentid === secondid;
+  const initPromiseRef = useRef(null);
 
   useLayoutEffect(() => {
     props.navigation.setOptions({ headerShown: false });
   }, []);
 
-  // Initialize discussion fields 
-  useEffect(() => {
-    ref_discussion.once("value").then((snap) => {
-      const toUpdate = {};
-      if (!snap.hasChild("currentIDisTyping")) toUpdate.currentIDisTyping = false;
-      if (!snap.hasChild("secondIDisTyping")) toUpdate.secondIDisTyping = false;
-      if (!snap.hasChild("BackgroundImage")) toUpdate.BackgroundImage = null;
-      if (Object.keys(toUpdate).length) ref_discussion.update(toUpdate);
-    });
-  }, []);
+  // Ensure discussion exists with members and only current user's typing indicator
+  const ensureDiscussionInitialized = () => {
+    if (initPromiseRef.current) return initPromiseRef.current;
 
-  // Recipient Data & Online Status   
+    initPromiseRef.current = (async () => {
+      const snap = await ref_discussion.once("value");
+      if (!snap.exists()) {
+        await ref_discussion.set({
+          members: { [currentid]: true, [secondid]: true },
+          [myTypingKey]: false,
+        });
+        return;
+      }
+
+      if (!snap.child("members").child(currentid).exists()) {
+        await ref_discussion.child("members").child(currentid).set(true);
+      }
+      if (!snap.child("members").child(secondid).exists()) {
+        await ref_discussion.child("members").child(secondid).set(true);
+      }
+      if (!snap.hasChild(myTypingKey)) {
+        await ref_discussion.child(myTypingKey).set(false);
+      }
+    })().catch((err) => {
+      initPromiseRef.current = null;
+      throw err;
+    });
+
+    return initPromiseRef.current;
+  };
+
+  useEffect(() => {
+    initPromiseRef.current = null;
+    ensureDiscussionInitialized().catch((err) => {
+      console.warn("Discussion init warning:", err?.message || err);
+    });
+  }, [roomID]);
+
+  // Recipient Data & Online Status  
   useEffect(() => {
     const recipientListener = ref_recipient.on("value", (snap) => {
       if (!snap.exists()) return;
+      
       const d = snap.val();
       // Update recipient data and online status
       setRecipientData(d);
@@ -103,9 +139,9 @@ export default function Chat(props) {
     return () => ref_recipient.off("value", recipientListener);
   }, [secondid]);
 
-  // Messages Listener
+  // Messages Listener (restore)
   useEffect(() => {
-    const listener = ref_discussion.on("value", (snapshot) => {
+      const listener = ref_discussion.on("value", (snapshot) => {
       const fetchedMessages = [];
       const currentTyping = snapshot.child("currentIDisTyping").val();
       const secondTyping = snapshot.child("secondIDisTyping").val();
@@ -119,9 +155,11 @@ export default function Chat(props) {
       setBackgroundImage(bg || null);
 
       snapshot.forEach((child) => {
+
+        // 3 lignes pour skiper les metamodele w naccedi lel contenu te3 room id
         const key = child.key;
         const item = child.val();
-        if (key === "currentIDisTyping" || key === "secondIDisTyping" || key === "BackgroundImage") return;
+        if (key === "currentIDisTyping" || key === "secondIDisTyping" || key === "BackgroundImage" || key === "members") return;
         
         if (item) {
           fetchedMessages.push({
@@ -143,17 +181,21 @@ export default function Chat(props) {
       // Mark seen
       snapshot.forEach((child) => {
         const key = child.key;
-        if (["currentIDisTyping", "secondIDisTyping", "BackgroundImage"].includes(key)) return;
+        if (["currentIDisTyping", "secondIDisTyping", "BackgroundImage", "members"].includes(key)) return;
         const item = child.val();
         if (!item) return;
+
+       
         const sender = item.Sender || (item.user && item.user._id);
         const isSeen = item.isSeen === true;
 
-        if (sender === secondid && !isSeen) {
+        // secondid is sender and message is unseen
+        if (sender === secondid && !isSeen && !item.seenBy) {
+          //message a été envoyé par mon ami (secondid) ET n'est pas encore marqué comme vu naaml update
           ref_discussion.child(key).update({
             isSeen: true,
             seenBy: currentid,
-            seenAt: Date.now(),
+            seenAt: SERVER_TIMESTAMP,
           });
         }
       });
@@ -165,11 +207,13 @@ export default function Chat(props) {
   //  Typing Indicator Functions 
 
   const otherIsTyping = () => {
-    if (isSelfChat) return typingState.currentIDisTyping && typingState.secondIDisTyping;
+    if (isSelfChat) return  typingState.secondIDisTyping;
+    // ken eni premier current nwali nchouf second
     return amFirst ? typingState.secondIDisTyping : typingState.currentIDisTyping;
   };
 
   const handleFocus = () => {
+    // ken eni premier nupdate current 
     if (amFirst) ref_discussion.child("currentIDisTyping").set(true);
     else ref_discussion.child("secondIDisTyping").set(true);
   };
@@ -189,31 +233,38 @@ export default function Chat(props) {
 
   const sendMessage = async (type = "text", content = null) => {
     if (type === "text" && !inputText.trim()) return;
-    // Create new message key
-    const key = ref_discussion.push().key;
-    const newMsg = {
-      _id: key,
-      createdAt: Date.now(),
-      user: { _id: currentid },
-      Receiver: secondid,
-      Sender: currentid,
-      isSeen: false,
-    };
-
-    if (type === "text") {
-      newMsg.text = inputText;
-    } else if (type === "image") {
-      newMsg.image = content;
-      newMsg.text = " Image"; 
-    } else if (type === "location") {
-      newMsg.location = content;
-      newMsg.text = " Location"; 
-    }else if (type === "file") {
-        newMsg.file = content; 
-        newMsg.text = "File: " + content.name;
-    }
 
     try {
+      await ensureDiscussionInitialized();
+
+      // Create new message key
+      const key = ref_discussion.push().key;
+      const newMsg = {
+        _id: key,
+        createdAt: Date.now(),
+        user: { _id: currentid },
+        Receiver: secondid,
+        Sender: currentid,
+        isSeen: false,
+      };
+
+      if (type === "text") {
+        newMsg.text = inputText;
+      } else if (type === "image") {
+        newMsg.image = content;
+        newMsg.text = " Image";
+      } else if (type === "location") {
+        newMsg.location = content;
+        newMsg.text = " Location";
+      } else if (type === "file") {
+        newMsg.file = {
+          url: content.url,
+          name: content.name,
+          ...(content.type ? { type: content.type } : {}),
+        };
+        newMsg.text = "File: " + content.name;
+      }
+
       // Save message to database
       await ref_discussion.child(key).set(newMsg);
 
@@ -221,7 +272,7 @@ export default function Chat(props) {
         setInputText("");
         handleBlur();
       }
-        // Update contacts for both users
+      // Update contacts for both users
       await ref_my_contacts_current.child(secondid).set(true);
       await ref_my_contacts_second.child(currentid).set(true);
     } catch (err) {
@@ -229,49 +280,35 @@ export default function Chat(props) {
     }
   };
 
-  const uploadImageToSupabase = async (localURL) => {
+  const uploadImageToSupabase = async (localURL, prefix = currentid) => {
     try {
-      const fileName = `${currentid}_${Date.now()}.jpg`;
-      const response = await fetch(localURL);
-      // Convert to blob (binary large object)and then to array buffer
-      const blob = await response.blob();
-      const arrayBuffer = await new Response(blob).arrayBuffer();
-
-      const { error: uploadError } = await supabase.storage
-        .from("lesimagesprofiles")
-        .upload(fileName, arrayBuffer, { contentType: "image/jpeg", upsert: true });
-
-      if (uploadError) throw uploadError;
-
-      const { data } = supabase.storage.from("lesimagesprofiles").getPublicUrl(fileName);
-      return data.publicUrl;
+      const fileName = `${prefix}_${Date.now()}.jpg`;
+      const { publicUrl } = await uploadMediaToSupabase({
+        uri: localURL,
+        storagePath: fileName,
+        contentType: "image/jpeg",
+      });
+      return publicUrl;
     } catch (error) {
       Alert.alert("Upload Error", error.message);
       return null;
     }
   };
 
-  // --- Helper to upload files to Supabase ---
+  // upload files to Supabase ---
   const uploadFileToSupabase = async (uri, fileName, mimeType) => {
     try {
-        const response = await fetch(uri);
-        const blob = await response.blob();
-        const arrayBuffer = await new Response(blob).arrayBuffer();
-        
-        // Save to 'files' folder inside your bucket
-        const storagePath = `files/${currentid}_${Date.now()}_${fileName}`;
-
-        const { error: uploadError } = await supabase.storage
-            .from("lesimagesprofiles") 
-            .upload(storagePath, arrayBuffer, { contentType: mimeType || 'application/octet-stream', upsert: true });
-
-        if (uploadError) throw uploadError;
-
-        const { data } = supabase.storage.from("lesimagesprofiles").getPublicUrl(storagePath);
-        return data.publicUrl;
+      const safeName = sanitizeStorageFileName(fileName);
+      const storagePath = `files/${currentid}_${Date.now()}_${safeName}`;
+      const { publicUrl } = await uploadMediaToSupabase({
+        uri,
+        storagePath,
+        contentType: mimeType || "application/octet-stream",
+      });
+      return publicUrl;
     } catch (error) {
-        Alert.alert("Upload Error", error.message);
-        return null;
+      Alert.alert("Upload Error", error.message);
+      return null;
     }
   };
 
@@ -280,11 +317,11 @@ export default function Chat(props) {
     if (!permission.granted) return Alert.alert("Permission required");
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ["images"],
       quality: 0.7, // Compresses images to 70% quality to reduce file size
     });
 
-    if (!result.canceled) { //Checks if user actually selected an image (didn't cancel)
+    if (!result.canceled && result.assets?.[0]?.uri) { //Checks if user actually selected an image (didn't cancel)
       setUploading(true);
       const uri = result.assets[0].uri;
       const publicUrl = await uploadImageToSupabase(uri);
@@ -298,6 +335,7 @@ export default function Chat(props) {
   const pickAndSendFile = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
+        // Allow all file types
         type: "*/*",
         copyToCacheDirectory: true, // Essential for Android
       });
@@ -306,18 +344,19 @@ export default function Chat(props) {
         const file = result.assets[0];
         
         // Size Limit Check
-        if (file.size > 10 * 1024 * 1024) {
+        if (file.size && file.size > 10 * 1024 * 1024) {
           return Alert.alert("File too large", "Maximum file size is 10MB.");
         }
 
         setUploading(true);
         
-        // NEW: Upload to Supabase to get a real HTTP Link
+        // Upload to Supabase to get a real HTTP Link
         const publicUrl = await uploadFileToSupabase(file.uri, file.name, file.mimeType);
 
         setUploading(false);
 
         if (publicUrl) {
+
             // Send the HTTP URL to Firebase
             await sendMessage("file", {
                 url: publicUrl,
@@ -341,28 +380,42 @@ export default function Chat(props) {
     }
 
     setUploading(true);
-    let location = await Location.getCurrentPositionAsync({});
-    setUploading(false);
-    
-    sendMessage("location", {
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude
-    });
-  };
-
-  const changeBackground = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-    });
-    if (!result.canceled) {
-        ref_discussion.child("BackgroundImage").set(result.assets[0].uri);
+    try {
+      let location = await Location.getCurrentPositionAsync({});
+      await sendMessage("location", {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude
+      });
+    } catch (err) {
+      Alert.alert("Location Error", err.message);
+    } finally {
+      setUploading(false);
     }
   };
 
-  // --- Helpers for Display ---
+  const changeBackground = async () => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) return Alert.alert("Permission required");
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 0.7,
+      });
+      if (!result.canceled && result.assets?.[0]?.uri) {
+        setUploading(true);
+        await ensureDiscussionInitialized();
+        const publicUrl = await uploadImageToSupabase(result.assets[0].uri, `bg_${roomID}`);
+        if (publicUrl) {
+          await ref_discussion.child("BackgroundImage").set(publicUrl);
+        }
+      }
+    } catch (err) {
+      Alert.alert("Background Error", err.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
 
   const openMap = (location) => {
     if(location) {
@@ -383,22 +436,28 @@ export default function Chat(props) {
   };
 
   const renderMessage = ({ item, index }) => {
-    // Determine if the message is sent by the current user
+
+    // Determine if the message sent by the currentid
     const isMe = item.userId === currentid;
-    
-    // Exact time inside the bubble
+  
+    // Exact time inside the bubble of msg
     const exactTime = item.createdAt ? getExactTime(item.createdAt) : "";
+
     // Relative time below the bubble
     const relativeTime = item.createdAt ? getRelativeTime(item.createdAt) : "";
+    
     // Check if this specific message is toggled
     const isToggled = toggledMessageId === item._id;
 
-    // --- DATE SEPARATOR LOGIC ---
+    //  separateur logique de date
+
     let showDateSeparator = false;
     const currentDate = new Date(item.createdAt);
+    // index hia l position du message eli fel liste (ey 1er message fel historique 3andou fou9ou une date)
     if (index === 0) {
         showDateSeparator = true;
     } else {
+      // date te3 l msg li 9bal pour faire la comparaison
         const prevDate = new Date(messages[index - 1].createdAt);
         if (currentDate.toDateString() !== prevDate.toDateString()) {
             showDateSeparator = true;
@@ -422,7 +481,7 @@ export default function Chat(props) {
             />
             )}
             
-            {/* WRAP BUBBLE IN CONTAINER FOR RESPONSIVENESS AND CLICK */}
+          
             <View style={{ maxWidth: '75%' }}>
                 <TouchableOpacity activeOpacity={0.9} onPress={() => toggleMessageTime(item._id)}>
                     <View
@@ -447,7 +506,7 @@ export default function Chat(props) {
                             </Text>
                         </TouchableOpacity>
                     ) : item.file ? (
-                        // --- FILE RENDER BUBBLE ---
+                        
                         <TouchableOpacity 
                             onPress={() => Linking.openURL(item.file.url)} 
                             style={[styles.fileBubble, { backgroundColor: isMe ? 'rgba(255,255,255,0.2)' : '#f0f0f0' }]}
@@ -494,6 +553,8 @@ export default function Chat(props) {
     );
   };
 
+
+
   // Shared Media Logic
   const sharedImages = messages.filter(m => m.image);
   const sharedLocations = messages.filter(m => m.location);
@@ -503,7 +564,8 @@ export default function Chat(props) {
     <ImageBackground source={backgroundImage ? { uri: backgroundImage } : require("../../assets/background.jpg")} style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#3b4db8" />
 
-      {/* HEADER */}
+      {/* header */}
+
       <View style={styles.customHeader}>
         <View style={styles.headerLeft}>
           <TouchableOpacity onPress={() => props.navigation.goBack()} style={{ paddingRight: 10 }}>
@@ -537,7 +599,7 @@ export default function Chat(props) {
         </View>
       </View>
 
-      {/* NEW: Updated KeyboardAvoidingView with keyboardVerticalOffset to fix hidden input */}
+      {/*  Updated KeyboardAvoidingView with keyboardVerticalOffset to fix hidden input */}
       <KeyboardAvoidingView 
         style={{ flex: 1 }} 
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -587,6 +649,7 @@ export default function Chat(props) {
       </KeyboardAvoidingView>
 
       {/* SHARED FILES MODAL */}
+      
       <Modal visible={sharedModalVisible} animationType="slide" transparent={false} onRequestClose={() => setSharedModalVisible(false)}>
         <View style={{ flex: 1, backgroundColor: "#f5f5f5" }}>
           <View style={[styles.customHeader, { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }]}>

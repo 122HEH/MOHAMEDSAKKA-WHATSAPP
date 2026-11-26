@@ -1,39 +1,32 @@
 import { StatusBar } from 'expo-status-bar';
-import { Button, ImageBackground, StyleSheet,
-  Text,TextInput,View, TouchableOpacity, Image, Alert} from 'react-native';
+import { Button, ImageBackground, StyleSheet, Text, TextInput, View, TouchableOpacity, Alert } from 'react-native';
 import React, { useState } from 'react';
 import firebase from '../config';
-import * as ImagePicker from "expo-image-picker";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { SERVER_TIMESTAMP, normalizePhone, syncOnlinePresence } from "../utils/appHelpers";
 
 const database = firebase.database();
-const ref_all_accounts = database.ref("Acounts"); 
+const ref_all_accounts = database.ref("Acounts");
+const ref_public_profiles = database.ref("PublicProfiles");
+const ref_phone_lookup = database.ref("PhoneLookup");
 
 export default function CreateUser({ navigation }) {
   const auth = firebase.auth();
-
   const [fullName, setFullName] = useState("");
   const [pseudo, setPseudo] = useState("");
   const [numero, setNumero] = useState("");
   const [email, setEmail] = useState("");
   const [pwd, setPwd] = useState("");
   const [confPwd, setConfPwd] = useState("");
-  const [profilePic, setProfilePic] = useState(null);
 
-  // Select Profile Picture
-  async function pickImage() {
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
-    });
-
-    if (!result.canceled) {
-      setProfilePic(result.assets[0].uri);
-    }
-  }
-
-  //  Handle Registration
+  // Handle Registration
   const handleRegister = async () => {
-    if (!fullName || !email || !pwd || !pseudo) {
+    const cleanFullName = fullName.trim();
+    const cleanPseudo = pseudo.trim();
+    const cleanEmail = email.trim();
+    const cleanNumero = normalizePhone(numero);
+
+    if (!cleanFullName || !cleanEmail || !pwd || !cleanPseudo) {
       Alert.alert("Missing info", "Please fill all required fields.");
       return;
     }
@@ -42,29 +35,71 @@ export default function CreateUser({ navigation }) {
       return;
     }
 
-    try {
-      //Create User in Firebase Authentication
-      await auth.createUserWithEmailAndPassword(email.trim(), pwd);
-      const uid = auth.currentUser.uid;
+    let createdUser = null;
+    let wroteAccount = false;
+    let wrotePublic = false;
+    let wrotePhone = false;
 
-      // Save ALL fields including Pseudo and Numero
-      // set 'online' false by default and isTyping false default
+    try {
+      // Create User in Firebase Authentication
+      const cred = await auth.createUserWithEmailAndPassword(cleanEmail, pwd);
+      createdUser = cred.user;
+      const uid = createdUser.uid;
+
+      // Check phone uniqueness before creating RTDB records
+      if (cleanNumero.length > 0) {
+        const existingPhone = await ref_phone_lookup.child(cleanNumero).once("value");
+        if (existingPhone.exists() && existingPhone.val()?.uid !== uid) {
+          throw new Error("This phone number is already associated with another account.");
+        }
+      }
+
       await ref_all_accounts.child(uid).set({
         Id: uid,
-        FullName: fullName,
-        Pseudo: pseudo,
-        Numero: numero,
-        Email: email.trim(),
-        ProfileImage: profilePic ? profilePic : null,
-        online: false,
-        lastSeen: Date.now(),
-        isTyping: false,
+        FullName: cleanFullName,
+        Pseudo: cleanPseudo,
+        Numero: cleanNumero,
+        Email: cleanEmail,
+        online: true,
+        lastSeen: SERVER_TIMESTAMP,
       });
+      wroteAccount = true;
 
+      await ref_public_profiles.child(uid).set({
+        Id: uid,
+        FullName: cleanFullName,
+        Pseudo: cleanPseudo,
+        online: true,
+        lastSeen: SERVER_TIMESTAMP,
+      });
+      wrotePublic = true;
+
+      if (cleanNumero.length > 0) {
+        await ref_phone_lookup.child(cleanNumero).set({
+          uid,
+          FullName: cleanFullName,
+          Pseudo: cleanPseudo,
+        });
+        wrotePhone = true;
+      }
+
+      await AsyncStorage.setItem("CURRENT_UID", uid);
+      await syncOnlinePresence(database, uid);
       Alert.alert("Success", "Account created!");
-      navigation.replace("Auth");
-
+      navigation.replace("Home", { currentid: uid });
     } catch (error) {
+      // Best-effort rollback of partial creation so user can retry cleanly
+      if (createdUser) {
+        const uid = createdUser.uid;
+        try {
+          if (wrotePhone && cleanNumero.length > 0) await ref_phone_lookup.child(cleanNumero).remove();
+          if (wrotePublic) await ref_public_profiles.child(uid).remove();
+          if (wroteAccount) await ref_all_accounts.child(uid).remove();
+          await createdUser.delete();
+        } catch (rollbackErr) {
+          console.warn("Registration rollback warning:", rollbackErr?.message || rollbackErr);
+        }
+      }
       Alert.alert("Error", error.message);
     }
   };
@@ -72,14 +107,7 @@ export default function CreateUser({ navigation }) {
   return (
     <ImageBackground source={require("../assets/background.jpg")} style={styles.container}>
       <View style={styles.card}>
-        <TouchableOpacity onPress={pickImage}>
-          <Image source={ profilePic ? { uri: profilePic } : require("../assets/profil.png") } style={styles.profilePic} />
-        </TouchableOpacity>
-
-        <Text style={styles.changePhotoText}>Tap image to select photo</Text>
-
         <Text style={styles.title}>Create Account</Text>
-
         <TextInput style={styles.input} placeholder="Full Name" value={fullName} onChangeText={setFullName} />
         <TextInput style={styles.input} placeholder="Pseudo (Username)" value={pseudo} onChangeText={setPseudo} />
         <TextInput style={styles.input} placeholder="Phone Number" value={numero} onChangeText={setNumero} keyboardType="phone-pad" />
@@ -104,7 +132,6 @@ export default function CreateUser({ navigation }) {
 // (styles: same as your original CreateUser.js)
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: "center", justifyContent: "center" },
-
   card: {
     width: "90%",
     padding: 25,
@@ -113,22 +140,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 40
   },
-
-  profilePic: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    marginBottom: 5,
-  },
-
-  changePhotoText: {
-    color: "#666",
-    marginBottom: 15,
-    fontSize: 12
-  },
-
   title: { fontSize: 30, fontWeight: "700", marginBottom: 15 },
-
   input: {
     width: "90%",
     backgroundColor: "#ececec",
@@ -136,9 +148,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     marginVertical: 5
   },
-
   row: { marginTop: 20, width: "90%" },
-
   link: {
     marginTop: 15,
     color: "#1b2fbf",

@@ -1,29 +1,24 @@
-import {
-  View,
-  Text,
-  TextInput,
-  StyleSheet,
-  Image,
-  ImageBackground,
-  TouchableOpacity,
-  Alert,
-  StatusBar,
-  Modal,
-} from "react-native";
-import { supabase } from "../../config";
+import { View, Text, TextInput,StyleSheet,Image,ImageBackground,  TouchableOpacity,  Alert,  StatusBar,  Modal,} from "react-native";
 import React, { useState, useEffect, useLayoutEffect } from "react";
 import firebase from "../../config";
 import * as ImagePicker from "expo-image-picker";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { EmailAuthProvider } from "firebase/auth";
+import {
+  normalizePhone,
+  uploadMediaToSupabase,
+  removeMediaFromSupabase,
+  setOfflinePresence,
+} from "../../utils/appHelpers";
 
 export default function Account({ route, navigation }) {
   const { currentid } = route.params;
 
   const database = firebase.database();
   const refAccount = database.ref("Acounts").child(currentid);
-  const auth = firebase.auth();
+  const refPublic = database.ref("PublicProfiles").child(currentid);
+  const auth = firebase.auth();  // lel logout / delete account
 
   const [nom, setNom] = useState("");
   const [pseudo, setPseudo] = useState("");
@@ -32,11 +27,11 @@ export default function Account({ route, navigation }) {
   const [userImage, setUserImage] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
 
-  // New state for Account Deletion
+  //state for Account Deletion
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [confirmPwd, setConfirmPwd] = useState("");
 
-  // FIX: This hides the white header bar so the background covers the top
+  // hides the white header bar so the background covers the top
   useLayoutEffect(() => {
     navigation.setOptions({ headerShown: false });
   }, [navigation]);
@@ -55,29 +50,29 @@ export default function Account({ route, navigation }) {
     });
   }, []);
 
-  // Supabase upload helper
-  const uploadImageToSupabase = async (localURL) => {
-    try {
-      const fileName = `${currentid}_${Date.now()}.jpg`;
+  // Shared helper to upload profile photo to Supabase and sync RTDB
+  const uploadAndSaveProfileImage = async (localUri) => {
+    const snapshot = await refAccount.once("value");
+    const prevFileName = snapshot.val()?.ImageFileName;
+    const fileName = `${currentid}_${Date.now()}.jpg`;
 
-      const response = await fetch(localURL);
-      const blob = await response.blob();
-      const arrayBuffer = await new Response(blob).arrayBuffer();
+    const { publicUrl } = await uploadMediaToSupabase({
+      uri: localUri,
+      storagePath: fileName,
+      contentType: "image/jpeg",
+    });
 
-      // Upload image
-      const { error: uploadError } = await supabase.storage
-        .from("lesimagesprofiles")
-        .upload(fileName, arrayBuffer, { contentType: "image/jpeg", upsert: true });
+    await refAccount.update({
+      ProfileImage: publicUrl,
+      ImageFileName: fileName,
+    });
+    await refPublic.update({
+      ProfileImage: publicUrl,
+    });
 
-      if (uploadError) throw uploadError;
-
-      // Get public URL
-      const { data } = supabase.storage.from("lesimagesprofiles").getPublicUrl(fileName);
-
-      return { publicUrl: data.publicUrl, fileName };
-    } catch (error) {
-      Alert.alert("Upload Error", error.message);
-      return { publicUrl: null, fileName: null };
+    setUserImage(publicUrl);
+    if (prevFileName) {
+      await removeMediaFromSupabase(prevFileName);
     }
   };
 
@@ -91,110 +86,132 @@ export default function Account({ route, navigation }) {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ["images"],
         quality: 0.7,
       });
 
-      if (!result.canceled) {
-        const localUri = result.assets[0].uri;
-
-        // Fetch previous file name from Firebase (if any)
-        const snapshot = await refAccount.once("value");
-        const prevFileName = snapshot.val()?.ImageFileName;
-
-        // Upload to Supabase
-        const { publicUrl, fileName } = await uploadImageToSupabase(localUri);
-
-        if (publicUrl && fileName) {
-          setUserImage(publicUrl);
-
-          // Delete old file from Supabase
-          if (prevFileName) {
-            await supabase.storage.from("lesimagesprofiles").remove([prevFileName]);
-          }
-
-          // Save new URL + filename in Firebase
-          await refAccount.update({
-            ProfileImage: publicUrl,
-            ImageFileName: fileName,
-          });
-        }
+      if (!result.canceled && result.assets?.[0]?.uri) {
+        await uploadAndSaveProfileImage(result.assets[0].uri);
       }
     } catch (error) {
       Alert.alert("Error", error.message);
     }
   };
 
-  // NEW: Function to Open Camera and Take Photo
+  // Function to Open Camera and Take Photo
   const takePhoto = async () => {
     setModalVisible(false);
     try {
-      // NEW: Request camera permissions
       const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
       if (!permissionResult.granted) {
         return Alert.alert("Permission required", "Permission is required to access the camera!");
       }
 
-      // NEW: Launch Camera
       const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ["images"],
         quality: 0.7,
       });
 
-      // NEW: Same upload logic as pickImage
-      if (!result.canceled) {
-        const localUri = result.assets[0].uri;
-
-        const snapshot = await refAccount.once("value");
-        const prevFileName = snapshot.val()?.ImageFileName;
-
-        const { publicUrl, fileName } = await uploadImageToSupabase(localUri);
-
-        if (publicUrl && fileName) {
-          setUserImage(publicUrl);
-
-          if (prevFileName) {
-            await supabase.storage.from("lesimagesprofiles").remove([prevFileName]);
-          }
-
-          await refAccount.update({
-            ProfileImage: publicUrl,
-            ImageFileName: fileName,
-          });
-        }
+      if (!result.canceled && result.assets?.[0]?.uri) {
+        await uploadAndSaveProfileImage(result.assets[0].uri);
       }
     } catch (error) {
       Alert.alert("Error", error.message);
     }
   };
 
-  function removeImage() {
-    setUserImage(null);
+  async function removeImage() {
     setModalVisible(false);
-    refAccount.update({ ProfileImage: null, ImageFileName: null });
+    try {
+      const snapshot = await refAccount.once("value");
+      const prevFileName = snapshot.val()?.ImageFileName;
+
+      await refAccount.update({ ProfileImage: null, ImageFileName: null });
+      await refPublic.update({ ProfileImage: null });
+      setUserImage(null);
+
+      if (prevFileName) {
+        await removeMediaFromSupabase(prevFileName);
+      }
+    } catch (error) {
+      Alert.alert("Error", error.message);
+    }
   }
 
-  function saveData() {
-    refAccount
-      .update({
-        FullName: nom,
-        Pseudo: pseudo,
-        Email: email,
-        Numero: numero,
-        isTyping: false,
-      })
-      .then(() => Alert.alert("Updated", "Your information has been updated!"));
+  async function saveData() {
+    const cleanFullName = nom.trim();
+    const cleanPseudo = pseudo.trim();
+    const cleanEmail = email.trim();
+    const cleanNumero = normalizePhone(numero);
+
+    if (!cleanFullName || !cleanPseudo || !cleanEmail) {
+      Alert.alert("Missing info", "Name, pseudo, and email are required.");
+      return;
+    }
+
+    try {
+      const prevSnap = await refAccount.once("value");
+      const oldNumero = normalizePhone(prevSnap.val()?.Numero);
+
+      if (cleanNumero && cleanNumero !== oldNumero) {
+        const phoneSnap = await database.ref("PhoneLookup").child(cleanNumero).once("value");
+        if (phoneSnap.exists() && phoneSnap.val()?.uid !== currentid) {
+          Alert.alert("Error", "This phone number is already associated with another account.");
+          return;
+        }
+      }
+
+      await refAccount.update({
+        FullName: cleanFullName,
+        Pseudo: cleanPseudo,
+        Email: cleanEmail,
+        Numero: cleanNumero,
+      });
+
+      const publicSnap = await refPublic.once("value");
+      if (publicSnap.exists()) {
+        await refPublic.update({
+          FullName: cleanFullName,
+          Pseudo: cleanPseudo,
+        });
+      } else {
+        await refPublic.set({
+          Id: currentid,
+          FullName: cleanFullName,
+          Pseudo: cleanPseudo,
+          ...(userImage ? { ProfileImage: userImage } : {}),
+          online: true,
+        });
+      }
+
+      if (cleanNumero) {
+        await database.ref("PhoneLookup").child(cleanNumero).set({
+          uid: currentid,
+          FullName: cleanFullName,
+          Pseudo: cleanPseudo,
+        });
+      }
+      if (oldNumero && oldNumero !== cleanNumero) {
+        await database.ref("PhoneLookup").child(oldNumero).remove();
+      }
+
+      setNumero(cleanNumero);
+      Alert.alert("Updated", "Your information has been updated!");
+    } catch (error) {
+      Alert.alert("Update Error", error.message);
+    }
   }
 
   async function logout() {
     try {
-      await refAccount.update({ online: false, lastSeen: Date.now() });
+      try {
+        await setOfflinePresence(database, currentid);
+      } catch (presenceErr) {
+        console.warn("Offline presence update failed:", presenceErr?.message || presenceErr);
+      }
 
-      // remove saved auto-login credentials
       await AsyncStorage.removeItem("EMAIL");
       await AsyncStorage.removeItem("PWD");
-
-      // remove UID used for auto-login
       await AsyncStorage.removeItem("CURRENT_UID");
 
       await auth.signOut();
@@ -213,22 +230,36 @@ export default function Account({ route, navigation }) {
     }
     try {
       const user = auth.currentUser;
-      // Build the credential with email + password
+      if (!user) {
+        Alert.alert("Delete Failed", "No authenticated user session.");
+        return;
+      }
+
       const credential = EmailAuthProvider.credential(user.email, confirmPwd);
-      // Reauthenticate properly
       await user.reauthenticateWithCredential(credential);
-      // Delete user data from Realtime Database
+
+      const accountSnap = await refAccount.once("value");
+      const accountData = accountSnap.val() || {};
+      const oldNumero = normalizePhone(accountData.Numero);
+      const imageFileName = accountData.ImageFileName;
+
+      if (oldNumero) {
+        await database.ref("PhoneLookup").child(oldNumero).remove();
+      }
+      await refPublic.remove();
       await refAccount.remove();
-      // Delete user account
+      if (imageFileName) {
+        await removeMediaFromSupabase(imageFileName);
+      }
+
       await user.delete();
-      // Cleanup local storage
+
       await AsyncStorage.removeItem("CURRENT_UID");
       await AsyncStorage.removeItem("EMAIL");
       await AsyncStorage.removeItem("PWD");
 
       setDeleteModalVisible(false);
       navigation.replace("Auth");
-
     } catch (error) {
       Alert.alert("Delete Failed", error.message);
     }
@@ -273,7 +304,7 @@ export default function Account({ route, navigation }) {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Profile Picture</Text>
             
-            {/* NEW: Button to open Camera */}
+            {/*  Button to open Camera */}
             <TouchableOpacity style={styles.modalBtn} onPress={takePhoto}>
               <Text style={styles.modalBtnText}>Take a photo</Text>
             </TouchableOpacity>

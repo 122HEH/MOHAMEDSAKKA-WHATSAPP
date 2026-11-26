@@ -5,7 +5,6 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import Home from './Screens/Home.js';
 import Chat from './Screens/Home/Chat.js';
 import GroupChat from './Screens/Home/GroupChat.js';
-import Account from './Screens/Home/Account.js';
 const stack= createNativeStackNavigator();
 
 export default function App() {
