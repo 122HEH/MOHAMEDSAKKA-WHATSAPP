@@ -37,6 +37,7 @@ export function buildRoomId(uid1, uid2) {
  * Returns { publicUrl, storagePath } or throws on failure.
  */
 export async function uploadMediaToSupabase({ uri, storagePath, contentType }) {
+  if (!supabase) throw new Error("Supabase client is not configured. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_KEY in .env.local.");
   if (!uri) throw new Error("Missing file URI.");
   if (!storagePath) throw new Error("Missing storage path.");
 
@@ -78,6 +79,10 @@ export async function uploadMediaToSupabase({ uri, storagePath, contentType }) {
  */
 export async function removeMediaFromSupabase(storagePath) {
   if (!storagePath) return;
+  if (!supabase) {
+    console.warn("Supabase client is not configured. Skipping file removal.");
+    return;
+  }
   try {
     const { error } = await supabase.storage
       .from(SUPABASE_BUCKET)
